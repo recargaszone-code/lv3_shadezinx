@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: quantum-v3
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: LOVABLE_API_URL
+        value: https://api.lovable.dev
+      - key: ALLOW_ORIGIN
+        value: "*"
+      - key: SHARED_SECRET
+        sync: false

@@ -1,0 +1,15 @@
+{
+  "name": "quantum-v3-render",
+  "version": "1.0.0",
+  "description": "Servidor Node.js para Render que replica o método V3 (Lovable /chat com intent fix_error).",
+  "main": "server.js",
+  "type": "commonjs",
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5"
+  }
+}
