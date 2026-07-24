@@ -1,9 +1,17 @@
 // ============================================================
-// Quantum V3 — Render Node.js server
+// Quantum V3 — Render Node.js server (com seleção de modelo)
 // ============================================================
 // Replica o "método V3" da edge function `proxy-command`:
 // envia o prompt direto para  POST  https://api.lovable.dev/projects/{projeto_id}/chat
 // usando o intent "fix_error" com um build_event_id sintético.
+//
+// NOVIDADE: aceita o parâmetro `model` no body para escolher o modelo
+// que a Lovable usará ao processar o prompt. Aliases aceitos:
+//   "GPT5-CODEX"      -> gpt-5-codex
+//   "CLAUDE-Opus 4.8" -> claude-opus-4-8
+//   "Gemini 3.1"      -> gemini-3.1-pro
+// (Também aceita o id "cru" — se vier algo diferente dos aliases,
+//  o valor é enviado exatamente como veio.)
 //
 // Endpoint exposto:   POST /v3
 // Healthcheck:        GET  /health
@@ -25,6 +33,33 @@ app.use(express.json({ limit: "25mb" }));
 
 const LOVABLE_API_URL = process.env.LOVABLE_API_URL || "https://api.lovable.dev";
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
+
+// ---------- model aliases ----------
+// Mapa de aliases "amigáveis" -> id que a Lovable espera no campo `model`.
+// Ajuste os valores da direita se a Lovable expor ids diferentes.
+const MODEL_ALIASES = {
+  "gpt5-codex": "gpt-5-codex",
+  "gpt-5-codex": "gpt-5-codex",
+  "codex": "gpt-5-codex",
+
+  "claude-opus 4.8": "claude-opus-4-8",
+  "claude-opus-4.8": "claude-opus-4-8",
+  "claude-opus-4-8": "claude-opus-4-8",
+  "opus 4.8": "claude-opus-4-8",
+  "opus-4.8": "claude-opus-4-8",
+
+  "gemini 3.1": "gemini-3.1-pro",
+  "gemini-3.1": "gemini-3.1-pro",
+  "gemini-3.1-pro": "gemini-3.1-pro",
+};
+
+function resolveModel(input) {
+  if (input == null) return null;
+  const raw = String(input).trim();
+  if (!raw) return null;
+  const key = raw.toLowerCase();
+  return MODEL_ALIASES[key] || raw; // fallback: envia como veio
+}
 
 // ---------- helpers ----------
 
@@ -55,7 +90,16 @@ function buildEventId() {
 
 // ---------- routes ----------
 
-app.get("/health", (_req, res) => res.json({ ok: true, service: "quantum-v3", t: Date.now() }));
+app.get("/health", (_req, res) =>
+  res.json({ ok: true, service: "quantum-v3", t: Date.now() })
+);
+
+app.get("/models", (_req, res) =>
+  res.json({
+    aliases: MODEL_ALIASES,
+    friendly: ["GPT5-CODEX", "CLAUDE-Opus 4.8", "Gemini 3.1"],
+  })
+);
 
 app.post("/v3", async (req, res) => {
   try {
@@ -63,7 +107,9 @@ app.post("/v3", async (req, res) => {
     if (SHARED_SECRET) {
       const got = req.header("x-shared-secret") || "";
       if (got !== SHARED_SECRET) {
-        return res.status(401).json({ success: false, error_display: "unauthorized" });
+        return res
+          .status(401)
+          .json({ success: false, error_display: "unauthorized" });
       }
     }
 
@@ -71,12 +117,15 @@ app.post("/v3", async (req, res) => {
       projeto_id,
       mensagem,
       chat_only = true,
+      // Novo: modelo a ser usado pela Lovable.
+      // Aceita alias amigável ("GPT5-CODEX", "CLAUDE-Opus 4.8", "Gemini 3.1")
+      // ou id cru.
+      model,
       // Token Bearer do Lovable (o mesmo que a extensão captura). Pode vir
       // no body como `bearer_token`/`lovable_token` ou no header Authorization.
       bearer_token,
       lovable_token,
       // Anexos no formato esperado pelo /chat
-      // (mesmo shape que a edge function gera após o upload V2)
       files = [],
       optimisticImageUrls = [],
       // Opcionais — sessão de browser usada pelo Lovable
@@ -91,13 +140,24 @@ app.post("/v3", async (req, res) => {
       lovable_token ||
       (req.header("authorization") || "").replace(/^Bearer\s+/i, "");
 
-    if (!projeto_id) return res.status(400).json({ success: false, error_display: "projeto_id obrigatório" });
-    if (!rawToken)   return res.status(400).json({ success: false, error_display: "bearer_token obrigatório" });
+    if (!projeto_id)
+      return res
+        .status(400)
+        .json({ success: false, error_display: "projeto_id obrigatório" });
+    if (!rawToken)
+      return res
+        .status(400)
+        .json({ success: false, error_display: "bearer_token obrigatório" });
     if (typeof mensagem !== "string" || !mensagem.trim()) {
-      return res.status(400).json({ success: false, error_display: "mensagem obrigatória" });
+      return res
+        .status(400)
+        .json({ success: false, error_display: "mensagem obrigatória" });
     }
 
-    const hasImages = (files && files.length > 0) || (optimisticImageUrls && optimisticImageUrls.length > 0);
+    const resolvedModel = resolveModel(model); // null se não veio
+    const hasImages =
+      (files && files.length > 0) ||
+      (optimisticImageUrls && optimisticImageUrls.length > 0);
     const bld = buildEventId();
 
     const v3Payload = {
@@ -125,7 +185,8 @@ app.post("/v3", async (req, res) => {
       current_viewport_dpr: viewport_dpr,
       view: "preview",
       view_description: "The user is currently viewing the preview. ",
-      model: null,
+      // Se `model` veio, envia. Senão null (Lovable usa o default do projeto).
+      model: resolvedModel,
       session_replay: "",
       client_logs: [],
       network_requests: [],
@@ -147,7 +208,9 @@ app.post("/v3", async (req, res) => {
     };
     if (browser_session_id) headers["X-Browser-Session-ID"] = browser_session_id;
 
-    const url = `${LOVABLE_API_URL}/projects/${encodeURIComponent(projeto_id)}/chat`;
+    const url = `${LOVABLE_API_URL}/projects/${encodeURIComponent(
+      projeto_id
+    )}/chat`;
     const upstream = await fetch(url, {
       method: "POST",
       headers,
@@ -159,6 +222,7 @@ app.post("/v3", async (req, res) => {
         success: true,
         message: "Prompt Enviado com Sucesso.",
         method: "v3",
+        model: resolvedModel,
         had_images: hasImages,
         message_id: v3Payload.id,
         ai_message_id: v3Payload.ai_message_id,
@@ -174,7 +238,9 @@ app.post("/v3", async (req, res) => {
     });
   } catch (err) {
     console.error("V3 error", err);
-    return res.status(200).json({ success: false, error_display: "Erro de rede ao enviar prompt." });
+    return res
+      .status(200)
+      .json({ success: false, error_display: "Erro de rede ao enviar prompt." });
   }
 });
 
