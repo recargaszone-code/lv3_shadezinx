@@ -1,166 +1,209 @@
-# Quantum V3 — Render Node.js
+# Quantum V3 — Render Server
 
-Servidor Node.js (Express) que replica o **método V3** da edge function `proxy-command`.
-Encaminha o prompt direto para `POST https://api.lovable.dev/projects/{projeto_id}/chat`
-com `intent: "fix_error"` e um `build_event_id` sintético (mesma lógica da edge function).
+Servidor Node.js (Express) para hospedar no [Render](https://render.com) que replica o **método V3** do Quantum Lovable: envia o prompt direto para `POST https://api.lovable.dev/projects/{projeto_id}/chat` usando o intent `fix_error` com um `build_event_id` sintético.
 
----
-
-## 1. Deploy no Render
-
-1. Crie um repositório Git com o conteúdo desta pasta (`render-v3/`) na raiz.
-2. No Render: **New → Web Service** e aponte para o repo.
-3. Configurações:
-   - **Environment**: `Node`
-   - **Build Command**: `npm install`
-   - **Start Command**: `npm start`
-   - **Health Check Path**: `/health`
-4. (Opcional) Variáveis de ambiente em **Environment**:
-   - `LOVABLE_API_URL` → `https://api.lovable.dev` (default)
-   - `ALLOW_ORIGIN` → `*` (default — CORS)
-   - `SHARED_SECRET` → string secreta. Se definida, **toda** requisição precisa enviar
-     o header `x-shared-secret: <mesmo valor>`. Recomendado em produção.
-
-Alternativamente, basta clicar **Deploy from blueprint** apontando para o `render.yaml`.
-
-Após o deploy você terá uma URL tipo `https://quantum-v3.onrender.com`.
+**Novidade nesta versão:** o body aceita o campo **`model`** para escolher qual modelo a Lovable vai usar ao processar o prompt.
 
 ---
 
-## 2. Endpoints
+## Endpoints
 
-### `GET /health`
-Healthcheck. Retorna `{ ok: true, service: "quantum-v3", t: ... }`.
+| Método | Rota      | Descrição                                                   |
+| ------ | --------- | ----------------------------------------------------------- |
+| GET    | `/health` | Healthcheck (`{ ok: true, ... }`).                          |
+| GET    | `/models` | Lista os aliases suportados no campo `model`.               |
+| POST   | `/v3`     | Envia um prompt para o projeto Lovable no método V3.        |
 
-### `POST /v3`
-Encaminha o prompt para o Lovable usando o método V3.
+---
 
-#### Headers
-| Header              | Obrigatório | Descrição |
-|---------------------|-------------|-----------|
-| `Content-Type`      | sim         | `application/json` |
-| `Authorization`     | opcional*   | `Bearer <lovable_token>` (alternativa a passar `bearer_token` no body) |
-| `x-shared-secret`   | se `SHARED_SECRET` estiver setado | Deve bater com a env var |
+## Variáveis de ambiente
 
-\* O token precisa chegar de algum jeito: ou no header `Authorization`, ou no body como `bearer_token`/`lovable_token`.
+| Variável          | Default                     | Descrição                                                                        |
+| ----------------- | --------------------------- | -------------------------------------------------------------------------------- |
+| `PORT`            | Injetado pelo Render        | Porta HTTP.                                                                      |
+| `LOVABLE_API_URL` | `https://api.lovable.dev`   | URL base da API Lovable.                                                         |
+| `ALLOW_ORIGIN`    | `*`                         | Origem permitida no CORS.                                                        |
+| `SHARED_SECRET`   | *(vazio)*                   | Se definido, todas as requisições precisam enviar `x-shared-secret` igual a ele. |
 
-#### Body (JSON) — **mesmos parâmetros que a edge function `proxy-command` usa no ramo V3**
+---
 
-```json
+## Deploy no Render
+
+1. Faça upload dos arquivos `server.js` e `package.json` num repositório.
+2. No Render: **New → Web Service** → aponte para o repo.
+3. **Build command:** `npm install`
+4. **Start command:** `npm start`
+5. (Opcional) Configure `SHARED_SECRET` em *Environment*.
+
+Rodando local:
+
+```bash
+cd render-v3
+npm install
+npm start
+# -> quantum-v3 listening on :10000
+```
+
+---
+
+## Campo `model` — como usar
+
+O campo `model` no body da requisição escolhe qual modelo a Lovable usa ao processar o prompt. Ele aceita **aliases amigáveis** (case-insensitive) ou o **id "cru"** do modelo.
+
+### Aliases suportados
+
+| Alias amigável       | Id enviado para a Lovable |
+| -------------------- | ------------------------- |
+| `GPT5-CODEX`         | `gpt-5-codex`             |
+| `CLAUDE-Opus 4.8`    | `claude-opus-4-8`         |
+| `Gemini 3.1`         | `gemini-3.1-pro`          |
+
+Também aceitos: `codex`, `opus 4.8`, `opus-4.8`, `gemini-3.1`, além dos ids crus (`gpt-5-codex`, `claude-opus-4-8`, `gemini-3.1-pro`).
+
+Se você mandar qualquer outra string, ela é enviada **exatamente como veio** para o campo `model` da Lovable (útil para modelos novos que ainda não estão mapeados).
+
+Se `model` for **omitido / `null`**, o servidor envia `model: null` no payload — a Lovable usa o default do projeto.
+
+> Os ids da direita são o que a Lovable espera hoje no campo `model`. Se em algum momento a Lovable renomear o id de um modelo, basta ajustar o mapa `MODEL_ALIASES` no topo de `server.js`.
+
+---
+
+## Body do `POST /v3`
+
+```jsonc
 {
-  "projeto_id": "8f3a...-uuid-do-projeto-no-lovable",
-  "mensagem": "Adicione um botão de logout no header",
-  "bearer_token": "eyJhbGciOi...token_do_lovable",
-  "chat_only": true,
+  "projeto_id": "550e8400-e29b-41d4-a716-446655440000",   // obrigatório
+  "mensagem":   "Refatore o header pra usar flex e adicione um menu mobile.", // obrigatório
+  "bearer_token": "eyJhbGciOi...",   // Token do Lovable (ou header Authorization: Bearer ...)
 
-  "files": [
-    { "file_id": "file_...", "file_name": "screenshot.png" }
-  ],
-  "optimisticImageUrls": [
-    "https://.../screenshot.png"
-  ],
+  "model": "GPT5-CODEX",             // opcional — alias ou id cru
 
-  "browser_session_id": "opcional",
-  "viewport_width": 878,
-  "viewport_height": 678,
-  "viewport_dpr": 1.25
+  "chat_only": true,                 // opcional (default true)
+  "files": [],                       // opcional — anexos no shape do /chat
+  "optimisticImageUrls": [],         // opcional
+
+  "browser_session_id": "abc-123",   // opcional
+  "viewport_width":  878,            // opcional
+  "viewport_height": 678,            // opcional
+  "viewport_dpr":    1.25            // opcional
 }
 ```
 
-| Campo | Tipo | Default | Notas |
-|-------|------|---------|-------|
-| `projeto_id` | string | — | UUID do projeto Lovable |
-| `mensagem` | string | — | Prompt do usuário |
-| `bearer_token` / `lovable_token` | string | — | Token Bearer do Lovable. Pode vir no header `Authorization` |
-| `chat_only` | bool | `true` | Igual ao parâmetro da edge function |
-| `files` | array | `[]` | Anexos no formato `{ file_id, file_name }` (use o pipeline V2 da própria edge function pra gerar) |
-| `optimisticImageUrls` | string[] | `[]` | URLs preview de imagens |
-| `browser_session_id` | string | — | Vira header `X-Browser-Session-ID` |
-| `viewport_width/height/dpr` | number | 878/678/1.25 | Igual ao default da edge function |
-
-#### Resposta — sucesso
+### Resposta de sucesso
 
 ```json
 {
   "success": true,
   "message": "Prompt Enviado com Sucesso.",
   "method": "v3",
+  "model": "gpt-5-codex",
   "had_images": false,
-  "message_id": "umsg_01h...",
-  "ai_message_id": "aimsg_01h..."
+  "message_id":   "umsg_...",
+  "ai_message_id":"aimsg_..."
 }
 ```
 
-#### Resposta — erro
-```json
-{ "success": false, "error_display": "...", "status": 401 }
-```
+### Resposta de erro
 
-(O status HTTP é sempre 200 — o `success: false` indica falha lógica, igual à edge function.)
+```json
+{
+  "success": false,
+  "error_display": "mensagem obrigatória",
+  "status": 400
+}
+```
 
 ---
 
-## 3. Exemplo de requisição
+## Exemplos
 
-### cURL
+### cURL — GPT5-CODEX
+
 ```bash
-curl -X POST https://quantum-v3.onrender.com/v3 \
+curl -X POST https://SEU-APP.onrender.com/v3 \
   -H "Content-Type: application/json" \
-  -H "x-shared-secret: meu-segredo-opcional" \
+  -H "x-shared-secret: SEU_SEGREDO" \
   -d '{
-    "projeto_id": "8f3a1c2e-9b00-4d11-8aaa-aaaaaaaaaaaa",
-    "mensagem": "Crie uma landing page com hero, features e CTA",
-    "bearer_token": "eyJhbGciOi...",
-    "chat_only": true
+    "projeto_id":  "550e8400-e29b-41d4-a716-446655440000",
+    "mensagem":    "Adiciona dark mode global.",
+    "bearer_token":"eyJhbGciOi...",
+    "model":       "GPT5-CODEX"
   }'
 ```
 
-### Node.js (fetch)
+### cURL — CLAUDE-Opus 4.8
+
+```bash
+curl -X POST https://SEU-APP.onrender.com/v3 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "projeto_id":  "550e8400-e29b-41d4-a716-446655440000",
+    "mensagem":    "Explique a arquitetura do projeto.",
+    "bearer_token":"eyJhbGciOi...",
+    "model":       "CLAUDE-Opus 4.8"
+  }'
+```
+
+### cURL — Gemini 3.1
+
+```bash
+curl -X POST https://SEU-APP.onrender.com/v3 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "projeto_id":  "550e8400-e29b-41d4-a716-446655440000",
+    "mensagem":    "Cria uma landing page nova.",
+    "bearer_token":"eyJhbGciOi...",
+    "model":       "Gemini 3.1"
+  }'
+```
+
+### JavaScript (fetch)
+
 ```js
-const r = await fetch("https://quantum-v3.onrender.com/v3", {
+const r = await fetch("https://SEU-APP.onrender.com/v3", {
   method: "POST",
   headers: {
     "Content-Type": "application/json",
-    "x-shared-secret": process.env.SHARED_SECRET, // se configurou
+    "x-shared-secret": "SEU_SEGREDO", // se você configurou
   },
   body: JSON.stringify({
-    projeto_id: "8f3a1c2e-9b00-4d11-8aaa-aaaaaaaaaaaa",
-    mensagem: "Adicione dark mode",
-    bearer_token: lovableToken,
-    chat_only: true,
+    projeto_id: PROJETO_ID,
+    mensagem: "Adiciona um formulário de contato",
+    bearer_token: LOVABLE_TOKEN,
+    model: "GPT5-CODEX", // ou "CLAUDE-Opus 4.8" ou "Gemini 3.1"
   }),
 });
-console.log(await r.json());
-```
-
-### JavaScript (browser/extensão)
-```js
-const res = await fetch("https://quantum-v3.onrender.com/v3", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({
-    projeto_id,
-    mensagem: prompt,
-    bearer_token: lovableBearer,
-    chat_only: true,
-    files,                 // opcional — array {file_id, file_name}
-    optimisticImageUrls,   // opcional
-  }),
-});
-const json = await res.json();
-if (!json.success) console.error(json.error_display);
+const data = await r.json();
+console.log(data);
 ```
 
 ---
 
-## 4. Observações importantes
+## Segurança
 
-- **Uploads/anexos**: este servidor **não** faz o upload dos arquivos para o Lovable
-  (esse pipeline é V2 — gera `file_id` via `/files/generate-upload-url`). Continue
-  fazendo o upload onde já faz e mande aqui apenas o array `files` no formato
-  `{ file_id, file_name }`. Se quiser que esse servidor também faça upload, peça
-  e eu adiciono uma rota `POST /v3/upload`.
-- **Sem licença/RLS**: este endpoint **não** valida licença nem grava `usage_tracking`
-  (esse acoplamento é do Supabase). Use o `SHARED_SECRET` pra evitar uso público.
-- **Compatível com a edge function**: o JSON enviado para o Lovable é byte-a-byte
-  o mesmo do bloco `useV3` da `proxy-command`.
+- **`SHARED_SECRET`**: recomendado em produção. Sem ele, qualquer pessoa com a URL do Render pode disparar prompts para qualquer projeto Lovable (desde que tenha o Bearer do usuário).
+- O `bearer_token` do Lovable é sensível — nunca logue nem exponha em frontend público.
+- CORS: por padrão `*`. Restrinja com `ALLOW_ORIGIN` para o domínio da sua extensão/site.
+
+---
+
+## Erros comuns
+
+| Status | `error_display`                      | Causa                                                                   |
+| ------ | ------------------------------------ | ----------------------------------------------------------------------- |
+| 400    | `projeto_id obrigatório`             | Falta o campo `projeto_id`.                                             |
+| 400    | `bearer_token obrigatório`           | Falta o token do Lovable (body ou header `Authorization`).              |
+| 400    | `mensagem obrigatória`               | Prompt vazio.                                                           |
+| 401    | `unauthorized`                       | `SHARED_SECRET` está definido e o header `x-shared-secret` não bate.    |
+| 200    | `success:false` + `status` upstream  | A Lovable rejeitou o prompt (token inválido/expirado, projeto sem acesso, modelo indisponível na conta, etc.). |
+
+---
+
+## Estrutura
+
+```
+render-v3/
+├── server.js       # servidor Express + método V3 + resolver de model
+├── package.json    # deps (express, cors) e script `start`
+└── README.md       # este arquivo
+```
