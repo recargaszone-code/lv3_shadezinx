@@ -1,15 +1,16 @@
 {
-  "name": "quantum-v3-render",
-  "version": "1.0.0",
-  "description": "Servidor Node.js para Render que replica o método V3 (Lovable /chat com intent fix_error).",
+  "name": "quantum-v3",
+  "version": "1.1.0",
+  "description": "Servidor Node.js (Render) que replica o método V3 do Quantum Lovable, com suporte a seleção de modelo (GPT5-CODEX, CLAUDE-Opus 4.8, Gemini 3.1).",
   "main": "server.js",
-  "type": "commonjs",
-  "engines": { "node": ">=18" },
   "scripts": {
     "start": "node server.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "dependencies": {
-    "express": "^4.19.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "express": "^4.19.2"
   }
 }
