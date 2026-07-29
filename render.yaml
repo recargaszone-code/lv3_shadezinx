@@ -1,15 +1,15 @@
 services:
   - type: web
-    name: quantum-v3
+    name: quantum-public-api
     env: node
     plan: free
     buildCommand: npm install
     startCommand: npm start
     healthCheckPath: /health
     envVars:
-      - key: LOVABLE_API_URL
-        value: https://api.lovable.dev
       - key: ALLOW_ORIGIN
         value: "*"
+      - key: REQUEST_TIMEOUT
+        value: "60000"
       - key: SHARED_SECRET
         sync: false
