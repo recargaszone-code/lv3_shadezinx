@@ -1,7 +1,7 @@
 {
-  "name": "quantum-v3",
-  "version": "1.1.0",
-  "description": "Servidor Node.js (Render) que replica o método V3 do Quantum Lovable, com suporte a seleção de modelo (GPT5-CODEX, CLAUDE-Opus 4.8, Gemini 3.1).",
+  "name": "quantum-public-api",
+  "version": "1.0.0",
+  "description": "Servidor Node.js (Render) que expõe a API pública de envio de prompts do Quantum Lovable.",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
