@@ -1,27 +1,18 @@
 // ============================================================
-// Quantum V3 — Render Node.js server (com seleção de modelo)
+// Quantum Public API — Render Node.js server
 // ============================================================
-// Replica o "método V3" da edge function `proxy-command`:
-// envia o prompt direto para  POST  https://api.lovable.dev/projects/{projeto_id}/chat
-// usando o intent "fix_error" com um build_event_id sintético.
+// Endpoint HTTP simples para envio de prompts.
+// Tudo já vem configurado (hardcoded): o cliente só precisa mandar
+// projeto_id, token_lovable e mensagem.
 //
-// NOVIDADE: aceita o parâmetro `model` no body para escolher o modelo
-// que a Lovable usará ao processar o prompt. Aliases aceitos:
-//   "GPT5-CODEX"      -> gpt-5-codex
-//   "CLAUDE-Opus 4.8" -> claude-opus-4-8
-//   "Gemini 3.1"      -> gemini-3.1-pro
-// (Também aceita o id "cru" — se vier algo diferente dos aliases,
-//  o valor é enviado exatamente como veio.)
+//   POST /send      -> envia um prompt
+//   GET  /health    -> healthcheck
 //
-// Endpoint exposto:   POST /v3
-// Healthcheck:        GET  /health
-//
-// Variáveis de ambiente opcionais:
-//   PORT                 (Render injeta automaticamente)
-//   LOVABLE_API_URL      default: https://api.lovable.dev
-//   ALLOW_ORIGIN         default: *           (CORS)
-//   SHARED_SECRET        default: <vazio>     (se definido, exige header
-//                                              x-shared-secret igual)
+// Variáveis de ambiente (todas opcionais):
+//   PORT              (injetada pelo Render)
+//   ALLOW_ORIGIN      CORS (default "*")
+//   SHARED_SECRET     se definido, exige header x-shared-secret
+//   REQUEST_TIMEOUT   ms (default 60000)
 // ============================================================
 
 const express = require("express");
@@ -31,218 +22,116 @@ const app = express();
 app.use(cors({ origin: process.env.ALLOW_ORIGIN || "*" }));
 app.use(express.json({ limit: "25mb" }));
 
-const LOVABLE_API_URL = process.env.LOVABLE_API_URL || "https://api.lovable.dev";
+// ---- Configuração interna (hardcoded) ----
+const UPSTREAM_URL =
+  "https://shcsggilkdjjxvorcida.supabase.co/functions/v1/chama-public-api";
+const UPSTREAM_KEY = "sb_publishable_1tGR4OuIzxhKfbLy8fD88Q_SN2RTRSN";
+const LICENSE_KEY = "QL-1497A46F0FD54C47BEDAB495";
+
 const SHARED_SECRET = process.env.SHARED_SECRET || "";
+const REQUEST_TIMEOUT = Number(process.env.REQUEST_TIMEOUT || 60000);
 
-// ---------- model aliases ----------
-// Mapa de aliases "amigáveis" -> id que a Lovable espera no campo `model`.
-// Ajuste os valores da direita se a Lovable expor ids diferentes.
-const MODEL_ALIASES = {
-  "gpt5-codex": "gpt-5-codex",
-  "gpt-5-codex": "gpt-5-codex",
-  "codex": "gpt-5-codex",
+const OK_MSG = "Comando Processado com Sucesso Via Rede Oculta!";
+const FAIL_MSG = "Falha ao conectar a rede oculta!";
 
-  "claude-opus 4.8": "claude-opus-4-8",
-  "claude-opus-4.8": "claude-opus-4-8",
-  "claude-opus-4-8": "claude-opus-4-8",
-  "opus 4.8": "claude-opus-4-8",
-  "opus-4.8": "claude-opus-4-8",
-
-  "gemini 3.1": "gemini-3.1-pro",
-  "gemini-3.1": "gemini-3.1-pro",
-  "gemini-3.1-pro": "gemini-3.1-pro",
-};
-
-function resolveModel(input) {
-  if (input == null) return null;
-  const raw = String(input).trim();
-  if (!raw) return null;
-  const key = raw.toLowerCase();
-  return MODEL_ALIASES[key] || raw; // fallback: envia como veio
+function ok(res, extra = {}) {
+  return res.json({ success: true, message: OK_MSG, ...extra });
 }
-
-// ---------- helpers ----------
-
-// TypeID gen — prefix_<26 char Crockford base32> (igual ao da edge function)
-function genLovableId(prefix) {
-  const crockford = "0123456789abcdefghjkmnpqrstvwxyz";
-  let ts = Date.now();
-  let timePart = "";
-  for (let i = 0; i < 10; i++) {
-    timePart = crockford[ts % 32] + timePart;
-    ts = Math.floor(ts / 32);
-  }
-  let randPart = "";
-  for (let i = 0; i < 16; i++) {
-    randPart += crockford[Math.floor(Math.random() * 32)];
-  }
-  return `${prefix}_${timePart}${randPart}`;
+function failed(res, detail) {
+  if (detail) console.error("[public-api] fail:", String(detail).slice(0, 500));
+  return res.json({ success: false, error_display: FAIL_MSG, message: FAIL_MSG });
 }
-
-function buildEventId() {
-  const b32 = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  let bldSuffix = "";
-  for (let i = 0; i < 8; i++) bldSuffix += b32[Math.floor(Math.random() * 32)];
-  let agentNum = "";
-  for (let i = 0; i < 14; i++) agentNum += Math.floor(Math.random() * 10);
-  return `main:agent#${agentNum}#bld:${bldSuffix}`;
-}
-
-// ---------- routes ----------
 
 app.get("/health", (_req, res) =>
-  res.json({ ok: true, service: "quantum-v3", t: Date.now() })
+  res.json({ ok: true, service: "quantum-public-api", t: Date.now() })
 );
 
-app.get("/models", (_req, res) =>
-  res.json({
-    aliases: MODEL_ALIASES,
-    friendly: ["GPT5-CODEX", "CLAUDE-Opus 4.8", "Gemini 3.1"],
-  })
-);
-
-app.post("/v3", async (req, res) => {
+app.post("/send", async (req, res) => {
   try {
-    // Shared secret opcional
-    if (SHARED_SECRET) {
-      const got = req.header("x-shared-secret") || "";
-      if (got !== SHARED_SECRET) {
-        return res
-          .status(401)
-          .json({ success: false, error_display: "unauthorized" });
-      }
+    if (SHARED_SECRET && (req.header("x-shared-secret") || "") !== SHARED_SECRET) {
+      return res.status(401).json({ success: false, error_display: "unauthorized" });
     }
 
     const {
       projeto_id,
       mensagem,
-      chat_only = true,
-      // Novo: modelo a ser usado pela Lovable.
-      // Aceita alias amigável ("GPT5-CODEX", "CLAUDE-Opus 4.8", "Gemini 3.1")
-      // ou id cru.
-      model,
-      // Token Bearer do Lovable (o mesmo que a extensão captura). Pode vir
-      // no body como `bearer_token`/`lovable_token` ou no header Authorization.
+      modo_pensar = false,
       bearer_token,
-      lovable_token,
-      // Anexos no formato esperado pelo /chat
-      files = [],
-      optimisticImageUrls = [],
-      // Opcionais — sessão de browser usada pelo Lovable
-      browser_session_id,
-      viewport_width = 878,
-      viewport_height = 678,
-      viewport_dpr = 1.25,
+      token_lovable,
+      files,
     } = req.body || {};
 
-    const rawToken =
-      bearer_token ||
-      lovable_token ||
-      (req.header("authorization") || "").replace(/^Bearer\s+/i, "");
+    const token = String(
+      token_lovable ||
+        bearer_token ||
+        (req.header("authorization") || "").replace(/^Bearer\s+/i, "")
+    ).trim();
 
-    if (!projeto_id)
-      return res
-        .status(400)
-        .json({ success: false, error_display: "projeto_id obrigatório" });
-    if (!rawToken)
-      return res
-        .status(400)
-        .json({ success: false, error_display: "bearer_token obrigatório" });
-    if (typeof mensagem !== "string" || !mensagem.trim()) {
-      return res
-        .status(400)
-        .json({ success: false, error_display: "mensagem obrigatória" });
+    const attachments = Array.isArray(files) ? files.slice(0, 10) : [];
+
+    if (!projeto_id) {
+      return res.status(400).json({ success: false, error_display: "projeto_id obrigatório" });
+    }
+    if (!token) {
+      return res.status(400).json({ success: false, error_display: "token obrigatório" });
+    }
+    if ((typeof mensagem !== "string" || !mensagem.trim()) && attachments.length === 0) {
+      return res.status(400).json({ success: false, error_display: "mensagem obrigatória" });
     }
 
-    const resolvedModel = resolveModel(model); // null se não veio
-    const hasImages =
-      (files && files.length > 0) ||
-      (optimisticImageUrls && optimisticImageUrls.length > 0);
-    const bld = buildEventId();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT);
 
-    const v3Payload = {
-      id: genLovableId("umsg"),
-      message: mensagem,
-      files,
-      selected_elements: [],
-      chat_only: !!chat_only,
-      optimisticImageUrls,
-      intent: "fix_error",
-      message_intent_metadata: {
-        fix_error_metadata: {
-          errors: [
-            { error_type: "build", error_message: "", build_event_id: bld },
-          ],
+    let upstream;
+    try {
+      upstream = await fetch(UPSTREAM_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: UPSTREAM_KEY,
+          Authorization: `Bearer ${UPSTREAM_KEY}`,
+          "x-license-key": LICENSE_KEY,
         },
-      },
-      contains_error: true,
-      error_ids: [bld],
-      ai_message_id: genLovableId("aimsg"),
-      thread_id: "main",
-      current_page: "/",
-      current_viewport_width: viewport_width,
-      current_viewport_height: viewport_height,
-      current_viewport_dpr: viewport_dpr,
-      view: "preview",
-      view_description: "The user is currently viewing the preview. ",
-      // Se `model` veio, envia. Senão null (Lovable usa o default do projeto).
-      model: resolvedModel,
-      session_replay: "",
-      client_logs: [],
-      network_requests: [],
-      runtime_errors: [],
-      integration_metadata: {
-        browser: {
-          preview_viewport_width: viewport_width,
-          preview_viewport_height: viewport_height,
-        },
-      },
-    };
+        body: JSON.stringify({
+          license_key: LICENSE_KEY,
+          projeto_id: String(projeto_id),
+          token_lovable: token,
+          mensagem: typeof mensagem === "string" ? mensagem : "",
+          modo_pensar: !!modo_pensar,
+          files: attachments,
+        }),
 
-    const headers = {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${rawToken}`,
-      Accept: "*/*",
-      Origin: "https://lovable.dev",
-      Referer: "https://lovable.dev/",
-    };
-    if (browser_session_id) headers["X-Browser-Session-ID"] = browser_session_id;
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
 
-    const url = `${LOVABLE_API_URL}/projects/${encodeURIComponent(
-      projeto_id
-    )}/chat`;
-    const upstream = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(v3Payload),
-    });
+    const raw = await upstream.text();
+    let data = {};
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      data = {};
+    }
 
-    if (upstream.ok || upstream.status === 202) {
-      return res.json({
-        success: true,
-        message: "Prompt Enviado com Sucesso.",
-        method: "v3",
-        model: resolvedModel,
-        had_images: hasImages,
-        message_id: v3Payload.id,
-        ai_message_id: v3Payload.ai_message_id,
+    if (upstream.ok && data && data.success === true) {
+      return ok(res);
+    }
+
+    // Erros de validação de entrada voltam para o cliente sem detalhes internos.
+    if (upstream.status === 400) {
+      return res.status(400).json({
+        success: false,
+        error_display: data.error_display || "Requisição inválida",
       });
     }
 
-    const errText = await upstream.text();
-    console.error("V3 chat failed", upstream.status, errText);
-    return res.status(200).json({
-      success: false,
-      error_display: errText || `Lovable retornou status ${upstream.status}`,
-      status: upstream.status,
-    });
+    return failed(res, raw);
   } catch (err) {
-    console.error("V3 error", err);
-    return res
-      .status(200)
-      .json({ success: false, error_display: "Erro de rede ao enviar prompt." });
+    return failed(res, err && err.message);
   }
 });
 
 const PORT = process.env.PORT || 10000;
-app.listen(PORT, () => console.log(`quantum-v3 listening on :${PORT}`));
+app.listen(PORT, () => console.log(`quantum-public-api listening on :${PORT}`));
